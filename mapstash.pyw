@@ -61,6 +61,70 @@ def get_json(url, log):
             time.sleep(2 * (attempt + 1))
 
 
+# ---- browsing osu!Collector ---------------------------------------
+
+BROWSE_PAGE = 30
+POPULAR_RANGES = {"Today": "today", "This week": "week", "This month": "month",
+                  "All time": "alltime"}
+
+
+def browse_collections(kind, cursor=None, range_="week", query=""):
+    """kind: 'popular' | 'recent' | 'search'.
+    Returns (collections, has_more, next_cursor)."""
+    from urllib.parse import urlencode
+    params = {"perPage": BROWSE_PAGE}
+    if cursor is not None:
+        params["cursor"] = cursor
+    if kind == "popular":
+        path = "popularv2"
+        params["range"] = range_
+    elif kind == "recent":
+        path = "recent"
+    else:
+        path = "search"
+        params["search"] = query
+    url = f"https://osucollector.com/api/collections/{path}?{urlencode(params)}"
+    data = get_json(url, lambda _msg: None)
+    if isinstance(data, list):  # some endpoints may return a bare list
+        return data, False, None
+    cols = data.get("collections") or data.get("results") or data.get("hits") or []
+    return cols, bool(data.get("hasMore")), data.get("nextPageCursor")
+
+
+def collection_date(col):
+    """dateUploaded is a Firestore timestamp ({_seconds}) or an ISO string."""
+    d = col.get("dateUploaded")
+    try:
+        if isinstance(d, dict):
+            return time.strftime("%Y-%m-%d", time.localtime(d.get("_seconds") or d.get("seconds")))
+        if isinstance(d, str):
+            return d[:10]
+    except Exception:
+        pass
+    return ""
+
+
+def star_summary(col):
+    """Short star-rating breakdown from difficultySpread, e.g. '5★ 40% · 6★ 35%'."""
+    spread = col.get("difficultySpread") or {}
+    try:
+        items = sorted(((int(float(k)), int(v)) for k, v in spread.items() if int(v) > 0))
+    except (ValueError, TypeError):
+        return ""
+    total = sum(v for _, v in items)
+    if not total:
+        return ""
+    top = sorted(items, key=lambda kv: -kv[1])[:4]
+    return " · ".join(f"{k}★ {v * 100 // total}%" for k, v in sorted(top))
+
+
+def mode_summary(col):
+    names = {"osu": "osu!", "taiko": "taiko", "fruits": "catch", "mania": "mania"}
+    modes = col.get("modes") or {}
+    parts = [f"{names.get(m, m)} {n:,}" for m, n in modes.items() if isinstance(n, int) and n]
+    return " · ".join(parts)
+
+
 def parse_collection_id(text):
     m = re.search(r"collections/(\d+)", text or "")
     if m:
@@ -482,8 +546,8 @@ def main_gui():
             s = load_settings()
 
             root.title(f"{APP_NAME} - {APP_TAGLINE}")
-            root.geometry("740x700")
-            root.minsize(620, 600)
+            root.geometry("860x760")
+            root.minsize(700, 640)
             root.configure(bg=BG)
 
             st = ttk.Style(root)
@@ -515,6 +579,21 @@ def main_gui():
             st.configure("Accent.TButton", background=PINK, foreground="#ffffff",
                          font=("Segoe UI", 10, "bold"))
             st.map("Accent.TButton", background=[("active", "#ff85bb"), ("disabled", "#5a3a48")])
+            st.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(0, 0, 0, 0))
+            st.configure("TNotebook.Tab", background=PANEL, foreground=MUTED, padding=(18, 8),
+                         borderwidth=0, font=("Segoe UI", 10, "bold"))
+            st.map("TNotebook.Tab", background=[("selected", PINK)],
+                   foreground=[("selected", "#ffffff")])
+            st.configure("Treeview", background=PANEL, fieldbackground=PANEL, foreground=FG,
+                         rowheight=28, borderwidth=0)
+            st.map("Treeview", background=[("selected", PINK)],
+                   foreground=[("selected", "#ffffff")])
+            st.configure("Treeview.Heading", background="#3a3135", foreground=FG,
+                         relief="flat", font=("Segoe UI", 9, "bold"))
+            st.map("Treeview.Heading", background=[("active", "#4a3f44")])
+            st.configure("TCombobox", foreground=FG, arrowcolor=FG, padding=4)
+            root.option_add("*TCombobox*Listbox.background", PANEL)
+            root.option_add("*TCombobox*Listbox.foreground", FG)
             st.configure("Pink.Horizontal.TProgressbar", troughcolor=PANEL, background=PINK,
                          bordercolor=PANEL, lightcolor=PINK, darkcolor=PINK)
 
@@ -523,7 +602,16 @@ def main_gui():
 
             ttk.Label(main, text=APP_NAME, style="Title.TLabel").pack(anchor="w")
             ttk.Label(main, text=APP_TAGLINE + " · unofficial, uses free mirrors",
-                      style="Sub.TLabel").pack(anchor="w", pady=(0, 12))
+                      style="Sub.TLabel").pack(anchor="w", pady=(0, 10))
+
+            self.nb = ttk.Notebook(main)
+            self.nb.pack(fill="both", expand=True)
+            browse_tab = ttk.Frame(self.nb, padding=(0, 12, 0, 0))
+            self.dl_tab = ttk.Frame(self.nb, padding=(0, 12, 0, 0))
+            self.nb.add(browse_tab, text="  Browse  ")
+            self.nb.add(self.dl_tab, text="  Download  ")
+            self.build_browse(browse_tab)
+            main = self.dl_tab  # everything below goes into the Download tab
 
             # --- collection link
             card = ttk.Frame(main, style="Card.TFrame", padding=12)
@@ -637,6 +725,216 @@ def main_gui():
             self.update_target()
             root.protocol("WM_DELETE_WINDOW", self.on_close)
             root.after(100, self.poll)
+
+        # ---- Browse tab
+        def build_browse(self, tab):
+            self.browse_rows = {}       # tree item id -> collection dict
+            self.browse_cursor = None
+            self.browse_has_more = False
+            self.browse_req = 0         # ignore results from outdated requests
+            self.browse_searching = False
+
+            top = ttk.Frame(tab, style="Card.TFrame", padding=10)
+            top.pack(fill="x")
+            ttk.Label(top, text="Show", style="Card.TLabel").pack(side="left")
+            self.browse_kind = tk.StringVar(value="Popular")
+            kind = ttk.Combobox(top, textvariable=self.browse_kind, state="readonly", width=10,
+                                values=["Popular", "Recent"])
+            kind.pack(side="left", padx=(6, 6))
+            kind.bind("<<ComboboxSelected>>", lambda _: self.browse_load())
+            self.browse_range = tk.StringVar(value="This week")
+            self.range_box = ttk.Combobox(top, textvariable=self.browse_range, state="readonly",
+                                          width=11, values=list(POPULAR_RANGES))
+            self.range_box.pack(side="left")
+            self.range_box.bind("<<ComboboxSelected>>", lambda _: self.browse_load())
+
+            ttk.Button(top, text="Search", command=self.browse_search).pack(side="right")
+            self.search_var = tk.StringVar()
+            se = ttk.Entry(top, textvariable=self.search_var, width=28)
+            se.pack(side="right", padx=(16, 6))
+            se.bind("<Return>", lambda _: self.browse_search())
+
+            body = ttk.Frame(tab)
+            body.pack(fill="both", expand=True, pady=(10, 0))
+
+            # list
+            listf = ttk.Frame(body, style="Card.TFrame", padding=2)
+            listf.pack(side="left", fill="both", expand=True)
+            cols = ("name", "uploader", "maps", "favs", "date")
+            self.tree = ttk.Treeview(listf, columns=cols, show="headings", selectmode="browse")
+            for c, text, w, anchor in (("name", "Collection", 260, "w"),
+                                       ("uploader", "Uploader", 120, "w"),
+                                       ("maps", "Maps", 70, "e"),
+                                       ("favs", "♥", 50, "e"),
+                                       ("date", "Uploaded", 90, "center")):
+                self.tree.heading(c, text=text, command=lambda c=c: self.sort_tree(c))
+                self.tree.column(c, width=w, anchor=anchor, stretch=(c == "name"))
+            ysb = ttk.Scrollbar(listf, command=self.tree.yview)
+            self.tree.configure(yscrollcommand=ysb.set)
+            ysb.pack(side="right", fill="y")
+            self.tree.pack(side="left", fill="both", expand=True)
+            self.tree.bind("<<TreeviewSelect>>", lambda _: self.show_details())
+            self.tree.bind("<Double-1>", lambda _: self.download_selected())
+
+            # details
+            det = ttk.Frame(body, style="Card.TFrame", padding=12, width=250)
+            det.pack(side="right", fill="y", padx=(10, 0))
+            det.pack_propagate(False)
+            self.d_name = ttk.Label(det, text="Pick a collection", style="Name.TLabel",
+                                    wraplength=225)
+            self.d_name.pack(anchor="w")
+            self.d_by = ttk.Label(det, text="", style="Muted.TLabel", wraplength=225)
+            self.d_by.pack(anchor="w", pady=(2, 10))
+            self.d_stats = ttk.Label(det, text="", style="Card.TLabel", wraplength=225,
+                                     justify="left")
+            self.d_stats.pack(anchor="w")
+            self.d_desc = ttk.Label(det, text="", style="Muted.TLabel", wraplength=225,
+                                    justify="left")
+            self.d_desc.pack(anchor="w", pady=(10, 0), fill="x")
+            btns = ttk.Frame(det, style="Card.TFrame")
+            btns.pack(side="bottom", fill="x")
+            self.d_dl = ttk.Button(btns, text="Download this", style="Accent.TButton",
+                                   command=self.download_selected, state="disabled")
+            self.d_dl.pack(fill="x")
+            self.d_web = ttk.Button(btns, text="Open on website", state="disabled",
+                                    command=self.open_selected_web)
+            self.d_web.pack(fill="x", pady=(6, 0))
+
+            bottom = ttk.Frame(tab)
+            bottom.pack(fill="x", pady=(8, 0))
+            self.browse_status = ttk.Label(bottom, text="", style="Sub.TLabel")
+            self.browse_status.pack(side="left")
+            self.more_btn = ttk.Button(bottom, text="Load more", state="disabled",
+                                       command=lambda: self.browse_load(more=True))
+            self.more_btn.pack(side="right")
+
+            self.update_range_box()
+            self.root.after(300, self.browse_load)
+
+        def update_range_box(self):
+            self.range_box.configure(
+                state="readonly" if self.browse_kind.get() == "Popular" else "disabled")
+
+        def browse_search(self):
+            if self.search_var.get().strip():
+                self.browse_load(search=True)
+            else:
+                self.browse_load()
+
+        def browse_load(self, more=False, search=None):
+            self.update_range_box()
+            if not more:
+                self.browse_searching = bool(search)
+                self.browse_cursor = None
+                self.tree.delete(*self.tree.get_children())
+                self.browse_rows.clear()
+                self.show_details()
+            if self.browse_searching:
+                kind, label = "search", f'Searching "{self.search_var.get().strip()}"...'
+            elif self.browse_kind.get() == "Recent":
+                kind, label = "recent", "Loading recent collections..."
+            else:
+                kind, label = "popular", "Loading popular collections..."
+            args = (kind, self.browse_cursor if more else None,
+                    POPULAR_RANGES.get(self.browse_range.get(), "week"),
+                    self.search_var.get().strip())
+            self.browse_req += 1
+            req = self.browse_req
+            self.browse_status.configure(text=label)
+            self.more_btn.configure(state="disabled")
+
+            def work():
+                try:
+                    cols, has_more, cursor = browse_collections(*args)
+                    self.q.put(("browse", req, cols, has_more, cursor, None))
+                except Exception as e:
+                    self.q.put(("browse", req, [], False, None, str(e)))
+            threading.Thread(target=work, daemon=True).start()
+
+        def on_browse(self, req, cols, has_more, cursor, error):
+            if req != self.browse_req:
+                return  # user already asked for something else
+            if error:
+                msg = "Couldn't load collections - check your internet connection."
+                if self.browse_searching:
+                    msg = "Search didn't work - try Popular/Recent, or paste a link instead."
+                self.browse_status.configure(text=msg)
+                self.write_log(f"✗ Browse: {error}")
+                return
+            for col in cols:
+                cid = col.get("id")
+                if cid is None or str(cid) in self.browse_rows:
+                    continue
+                uploader = (col.get("uploader") or {}).get("username", "")
+                self.tree.insert("", "end", iid=str(cid), values=(
+                    col.get("name", f"Collection {cid}"), uploader,
+                    f"{col.get('beatmapCount', 0):,}", col.get("favourites", 0),
+                    collection_date(col)))
+                self.browse_rows[str(cid)] = col
+            self.browse_cursor = cursor
+            self.browse_has_more = has_more and cursor is not None
+            self.more_btn.configure(state="normal" if self.browse_has_more else "disabled")
+            n = len(self.browse_rows)
+            self.browse_status.configure(
+                text=f"{n} collections" + (" · more available" if self.browse_has_more else "")
+                if n else "No collections found.")
+
+        def sort_tree(self, col):
+            numeric = col in ("maps", "favs")
+            rows = [(self.tree.set(i, col), i) for i in self.tree.get_children("")]
+            key = (lambda r: int(str(r[0]).replace(",", "") or 0)) if numeric else \
+                  (lambda r: str(r[0]).lower())
+            reverse = getattr(self, "_sort_state", None) != (col, True)
+            rows.sort(key=key, reverse=reverse)
+            for idx, (_, item) in enumerate(rows):
+                self.tree.move(item, "", idx)
+            self._sort_state = (col, reverse)
+
+        def selected_collection(self):
+            sel = self.tree.selection()
+            return self.browse_rows.get(sel[0]) if sel else None
+
+        def show_details(self):
+            col = self.selected_collection()
+            if not col:
+                self.d_name.configure(text="Pick a collection")
+                for w in (self.d_by, self.d_stats, self.d_desc):
+                    w.configure(text="")
+                self.d_dl.configure(state="disabled")
+                self.d_web.configure(state="disabled")
+                return
+            uploader = (col.get("uploader") or {}).get("username", "unknown")
+            self.d_name.configure(text=col.get("name", ""))
+            date = collection_date(col)
+            self.d_by.configure(text=f"by {uploader}" + (f" · {date}" if date else ""))
+            lines = [f"{col.get('beatmapCount', 0):,} maps   ♥ {col.get('favourites', 0)}"]
+            if mode_summary(col):
+                lines.append(mode_summary(col))
+            if star_summary(col):
+                lines.append(star_summary(col))
+            self.d_stats.configure(text="\n".join(lines))
+            desc = (col.get("description") or "").strip()
+            self.d_desc.configure(text=desc[:400] + ("…" if len(desc) > 400 else ""))
+            self.d_dl.configure(state="normal")
+            self.d_web.configure(state="normal")
+
+        def open_selected_web(self):
+            col = self.selected_collection()
+            if col:
+                import webbrowser
+                webbrowser.open(f"https://osucollector.com/collections/{col['id']}")
+
+        def download_selected(self):
+            col = self.selected_collection()
+            if not col:
+                return
+            if self.busy():
+                messagebox.showinfo(APP_NAME, "A download is already running. Stop it first, "
+                                              "or wait until it finishes.")
+                return
+            self.url.set(f"https://osucollector.com/collections/{col['id']}")
+            self.nb.select(self.dl_tab)
+            self.check()
 
         # ---- helpers
         def current_folder_var(self):
@@ -843,6 +1141,8 @@ def main_gui():
                     kind, *data = self.q.get_nowait()
                     if kind == "log":
                         self.write_log(data[0])
+                    elif kind == "browse":
+                        self.on_browse(*data)
                     elif kind == "plan":
                         self.on_plan(data[0])
                     elif kind == "progress":

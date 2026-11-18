@@ -1,11 +1,12 @@
 # MapStash
 
-**A free collection downloader for osu!** Paste an [osu!Collector](https://osucollector.com) link and MapStash downloads every map in the collection from free beatmap mirrors, then sets the collection up for osu!lazer or osu!stable.
+**A free collection downloader for osu!** Browse [osu!Collector](https://osucollector.com) collections right in the app (or paste a link) and MapStash downloads every map in the collection from free beatmap mirrors, then sets the collection up for osu!lazer or osu!stable.
 
 > **Unofficial.** MapStash is not affiliated with osu!Collector or ppy. If you enjoy osu!Collector, please consider supporting its creator. They run the site that makes sharing collections possible.
 
 ## Features
 
+- **Browse collections** inside the app: popular (today / week / month / all time), recent, and search
 - Works with **osu!lazer** and **osu!stable**
 - Shows **download size and free disk space** before you start, and warns if a collection won't fit
 - Live progress: maps done, GB downloaded, speed and time left
@@ -29,8 +30,9 @@ python mapstash.pyw
 
 ## How to use
 
-1. Copy a collection link from osucollector.com, for example `https://osucollector.com/collections/24173/...`
-2. Click **Paste**. MapStash checks the collection and shows the size and your free space.
+1. In the **Browse** tab, pick a collection and click **Download this** (or double-click it).
+   You can also paste a link from osucollector.com in the **Download** tab.
+2. MapStash checks the collection and shows the download size and your free space.
 3. Pick **osu!lazer** or **osu!stable**, then click **Download**.
 
 ### osu!lazer
