@@ -176,33 +176,91 @@ def parse_collection_id(text):
     return None
 
 
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_collection(cid, log):
-    """Returns (name, {set_id: [md5, ...]})."""
+    """Returns (name, maps). Each map is a dict:
+    {sid, md5, stars, bpm, length, mode, version}  (stars/bpm may be None)."""
     data = get_json(API.format(cid=cid), log)
     name = data.get("name") or f"osu!Collector {cid}"
-    sets = {}
+    basic = []
     for bs in data.get("beatmapsets") or []:
         if bs.get("id") is None:
             continue
-        md5s = [b.get("checksum") for b in bs.get("beatmaps") or [] if b.get("checksum")]
-        sets.setdefault(int(bs["id"]), []).extend(md5s)
+        for b in bs.get("beatmaps") or []:
+            if b.get("checksum"):
+                basic.append({"sid": int(bs["id"]), "md5": b["checksum"], "stars": None,
+                              "bpm": None, "length": None, "mode": None, "version": ""})
 
-    if not sets or not any(sets.values()):  # fallback: paginated endpoint
-        sets, cursor = {}, ""
+    # Paginated list has star rating / BPM for every difficulty.
+    detailed, cursor = [], ""
+    try:
         while True:
             page = get_json(API_V2.format(cid=cid, cursor=cursor), log)
             for b in page.get("beatmaps") or []:
-                sid = b.get("beatmapset_id") or (b.get("beatmapset") or {}).get("id")
-                if sid is None:
+                bset = b.get("beatmapset") or {}
+                sid = b.get("beatmapset_id") or bset.get("id")
+                if sid is None or not b.get("checksum"):
                     continue
-                lst = sets.setdefault(int(sid), [])
-                if b.get("checksum"):
-                    lst.append(b["checksum"])
-            if not page.get("hasMore"):
+                detailed.append({
+                    "sid": int(sid), "md5": b["checksum"],
+                    "stars": _num(b.get("difficulty_rating")),
+                    "bpm": _num(b.get("bpm") if b.get("bpm") is not None else bset.get("bpm")),
+                    "length": _num(b.get("hit_length") or b.get("total_length")),
+                    "mode": b.get("mode"), "version": b.get("version", "")})
+            if not page.get("hasMore") or page.get("nextPageCursor") is None:
                 break
             cursor = f"&cursor={page.get('nextPageCursor')}"
-            log(f"Loading map list... {sum(len(v) for v in sets.values())} maps")
-    return name, sets
+            log(f"Loading map details... {len(detailed):,} maps")
+    except Exception as e:
+        log(f"Couldn't load star ratings ({e}) - map filter won't be available.")
+        detailed = []
+
+    if not detailed:
+        if not basic:
+            raise RuntimeError("This collection has no maps (or osu!Collector didn't answer).")
+        return name, basic
+    seen = {m["md5"] for m in detailed}
+    detailed += [m for m in basic if m["md5"] not in seen]  # keep anything v2 missed
+    return name, detailed
+
+
+def map_matches(m, f):
+    """f: {"smin","smax","bmin","bmax"} or None."""
+    if not f:
+        return True
+    if f["smin"] > 0 or f["smax"] < 15:
+        if m["stars"] is None or not f["smin"] <= m["stars"] <= f["smax"]:
+            return False
+    if f["bmin"] > 0 or f["bmax"] < 1000:
+        if m["bpm"] is None or not f["bmin"] <= m["bpm"] <= f["bmax"]:
+            return False
+    return True
+
+
+def group_sets(maps, f=None):
+    """{set_id: [md5 of each matching difficulty]}"""
+    sets = {}
+    for m in maps:
+        if map_matches(m, f):
+            sets.setdefault(m["sid"], []).append(m["md5"])
+    return sets
+
+
+def filter_label(f):
+    if not f:
+        return ""
+    parts = []
+    if f["smin"] > 0 or f["smax"] < 15:
+        parts.append(f"{f['smin']:g}-{f['smax']:g}★")
+    if f["bmin"] > 0 or f["bmax"] < 1000:
+        parts.append(f"{f['bmin']:g}-{f['bmax']:g} BPM")
+    return ", ".join(parts)
 
 
 def existing_set_ids(folder):
@@ -313,11 +371,11 @@ def probe_size(sid, no_video):
     return None
 
 
-def estimate_size(set_ids, no_video, log, sample=24):
-    """Estimate the total download size from a random sample of sets.
-    Returns (bytes, rough) where rough=True means no mirror answered."""
+def estimate_avg_set(set_ids, no_video, log, sample=24):
+    """Average .osz size from a random sample of sets.
+    Returns (bytes_per_set, rough) where rough=True means no mirror answered."""
     if not set_ids:
-        return 0, False
+        return FALLBACK_AVG[no_video], True
     picks = random.sample(list(set_ids), min(sample, len(set_ids)))
     log(f"Checking download size ({len(picks)} sample maps)...")
     sizes = []
@@ -326,8 +384,8 @@ def estimate_size(set_ids, no_video, log, sample=24):
             if size:
                 sizes.append(size)
     if not sizes:
-        return FALLBACK_AVG[no_video] * len(set_ids), True
-    return int(sum(sizes) / len(sizes) * len(set_ids)), False
+        return FALLBACK_AVG[no_video], True
+    return int(sum(sizes) / len(sizes)), False
 
 
 # ---- collection.db --------------------------------------------------
@@ -452,24 +510,41 @@ def check_job(opts, emit, stop):
     lazer = opts["target"] == "lazer"
 
     log(f"Fetching collection {cid}...")
-    name, sets = fetch_collection(cid, log)
+    name, maps = fetch_collection(cid, log)
     if lazer:
         out_dir = os.path.join(opts["lazer_out"], re.sub(r'[\\/:*?"<>|]', "_", f"{cid} {name}"))
     else:
         out_dir = os.path.join(opts["stable_dir"], "Songs")
 
+    all_sets = group_sets(maps)
     have = existing_set_ids(out_dir)
-    todo = [sid for sid in sets if sid not in have]
-    est, rough = (0, False) if stop.is_set() else estimate_size(todo, opts["no_video"], log)
+    missing = [sid for sid in all_sets if sid not in have]
+    avg, rough = ((FALLBACK_AVG[opts["no_video"]], True) if stop.is_set()
+                  else estimate_avg_set(missing, opts["no_video"], log))
     plan = {
-        "key": plan_key(opts), "cid": cid, "name": name, "sets": sets, "lazer": lazer,
-        "out_dir": out_dir, "todo": todo, "have": len(sets) - len(todo),
-        "maps": sum(len(v) for v in sets.values()),
-        "est_bytes": est, "est_rough": rough, "free": free_space(out_dir),
+        "key": plan_key(opts), "cid": cid, "name": name, "lazer": lazer,
+        "out_dir": out_dir, "all_maps": maps, "have_ids": have,
+        "has_stars": any(m["stars"] is not None for m in maps),
+        "has_bpm": any(m["bpm"] is not None for m in maps),
+        "total_maps": len(maps), "total_sets": len(all_sets),
+        "avg_set": avg, "est_rough": rough, "free": free_space(out_dir),
     }
-    log(f'"{name}": {plan["maps"]} maps in {len(sets)} sets, {len(todo)} to download, '
-        f"~{fmt_bytes(est)}{' (rough guess)' if rough else ''}")
+    apply_filter(plan, None)
+    log(f'"{name}": {len(maps)} maps in {len(all_sets)} sets, {len(plan["todo"])} to download, '
+        f"~{fmt_bytes(plan['est_bytes'])}{' (rough guess)' if rough else ''}")
     emit("plan", plan)
+    return plan
+
+
+def apply_filter(plan, f):
+    """Fill plan's sets/todo/size for the given map filter (None = everything)."""
+    sets = group_sets(plan["all_maps"], f)
+    todo = [sid for sid in sets if sid not in plan["have_ids"]]
+    plan.update({
+        "filter": f, "filter_label": filter_label(f), "sets": sets, "todo": todo,
+        "have": len(sets) - len(todo), "maps": sum(len(v) for v in sets.values()),
+        "est_bytes": plan["avg_set"] * len(todo),
+    })
     return plan
 
 
@@ -537,6 +612,8 @@ def run_download(plan, opts, emit, stop):
 
     md5s = [h for hashes in plan["sets"].values() for h in hashes]
     col_name = opts.get("col_name") or plan["name"]
+    if plan.get("filter_label"):
+        col_name += f" [{plan['filter_label']}]"
     if opts["make_collection"]:
         if plan["lazer"]:
             result["col_dir"] = os.path.join(out_dir, "lazer-collection")
@@ -588,8 +665,8 @@ def main_gui():
             s = load_settings()
 
             root.title(f"{APP_NAME} - {APP_TAGLINE}")
-            root.geometry("980x780")
-            root.minsize(820, 660)
+            root.geometry("980x840")
+            root.minsize(820, 720)
             root.configure(bg=BG)
 
             st = ttk.Style(root)
@@ -695,6 +772,40 @@ def main_gui():
             self.space_note.grid(row=5, column=0, columnspan=4, sticky="w")
             info.columnconfigure(0, weight=1)
             info.columnconfigure(2, weight=1)
+
+            # --- map filter (only some difficulties)
+            mf = ttk.Frame(main, style="Card.TFrame", padding=12)
+            mf.pack(fill="x", pady=(10, 0))
+            self.mf_on = tk.BooleanVar(value=False)
+            ttk.Checkbutton(mf, text="Only download some maps", variable=self.mf_on,
+                            style="Card.TCheckbutton", command=self.map_filter_changed).grid(
+                row=0, column=0, columnspan=8, sticky="w")
+            self.mf_smin, self.mf_smax = tk.DoubleVar(value=6.0), tk.DoubleVar(value=7.0)
+            self.mf_bmin, self.mf_bmax = tk.IntVar(value=0), tk.IntVar(value=400)
+            self.mf_widgets = []
+
+            def spin(var, frm, to, inc, col, fmt=None):
+                kw = {"format": fmt} if fmt else {}
+                w = ttk.Spinbox(mf, from_=frm, to=to, increment=inc, width=6, textvariable=var,
+                                command=self.map_filter_changed, **kw)
+                w.grid(row=1, column=col, pady=(8, 0), padx=(0, 4))
+                w.bind("<KeyRelease>", lambda _: self.root.after(400, self.map_filter_changed))
+                self.mf_widgets.append(w)
+
+            ttk.Label(mf, text="Stars", style="Card.TLabel").grid(row=1, column=0, sticky="w",
+                                                                pady=(8, 0), padx=(0, 6))
+            spin(self.mf_smin, 0, 15, 0.5, 1, "%.1f")
+            ttk.Label(mf, text="to", style="Card.TLabel").grid(row=1, column=2, pady=(8, 0))
+            spin(self.mf_smax, 0, 15, 0.5, 3, "%.1f")
+            ttk.Label(mf, text="BPM", style="Card.TLabel").grid(row=1, column=4, sticky="w",
+                                                              pady=(8, 0), padx=(18, 6))
+            spin(self.mf_bmin, 0, 1000, 10, 5)
+            ttk.Label(mf, text="to", style="Card.TLabel").grid(row=1, column=6, pady=(8, 0))
+            spin(self.mf_bmax, 0, 1000, 10, 7)
+            self.mf_note = ttk.Label(mf, text="Check a collection to see how many maps match.",
+                                     style="Muted.TLabel")
+            self.mf_note.grid(row=2, column=0, columnspan=8, sticky="w", pady=(8, 0))
+            self.set_filter_widgets()
 
             # --- settings
             sc = ttk.Frame(main, style="Card.TFrame", padding=12)
@@ -1132,6 +1243,57 @@ def main_gui():
             self.nb.select(self.dl_tab)
             self.check()
 
+        # ---- map filter
+        def current_map_filter(self):
+            if not self.mf_on.get():
+                return None
+            try:
+                smin, smax = float(self.mf_smin.get()), float(self.mf_smax.get())
+            except (tk.TclError, ValueError):
+                smin, smax = 0.0, 15.0
+            try:
+                bmin, bmax = float(self.mf_bmin.get()), float(self.mf_bmax.get())
+            except (tk.TclError, ValueError):
+                bmin, bmax = 0.0, 1000.0
+            if smin > smax:
+                smin, smax = smax, smin
+            if bmin > bmax:
+                bmin, bmax = bmax, bmin
+            if self.plan and not self.plan["has_bpm"]:
+                bmin, bmax = 0.0, 1000.0
+            return {"smin": smin, "smax": smax, "bmin": bmin, "bmax": bmax}
+
+        def set_filter_widgets(self):
+            usable = not self.plan or self.plan["has_stars"]
+            state = "normal" if (self.mf_on.get() and usable) else "disabled"
+            for w in self.mf_widgets:
+                w.configure(state=state)
+
+        def map_filter_changed(self):
+            self.set_filter_widgets()
+            if not self.plan or self.busy():
+                return
+            if self.mf_on.get() and not self.plan["has_stars"]:
+                self.mf_note.configure(text="⚠ osu!Collector didn't send star ratings for this "
+                                            "collection, so all maps will be downloaded.")
+                apply_filter(self.plan, None)
+            else:
+                apply_filter(self.plan, self.current_map_filter())
+            self.show_plan(self.plan)
+
+        def update_filter_note(self, plan):
+            if not plan["has_stars"]:
+                if self.mf_on.get():
+                    return  # warning already shown
+                self.mf_note.configure(text="Star ratings aren't available for this collection.")
+            elif plan.get("filter"):
+                self.mf_note.configure(
+                    text=f"Matching: {plan['maps']:,} of {plan['total_maps']:,} maps "
+                         f"in {len(plan['sets']):,} sets. Whole sets are downloaded, but the "
+                         f"collection only gets the matching difficulties.")
+            else:
+                self.mf_note.configure(text=f"All {plan['total_maps']:,} maps will be downloaded.")
+
         # ---- helpers
         def current_folder_var(self):
             return self.lazer_out if self.target.get() == "lazer" else self.stable_dir
@@ -1265,6 +1427,15 @@ def main_gui():
 
         def begin_download(self, opts):
             plan = self.plan
+            plan["have_ids"] = existing_set_ids(plan["out_dir"])
+            apply_filter(plan, self.current_map_filter() if plan["has_stars"] else None)
+            self.show_plan(plan)
+            if not plan["todo"]:
+                if plan["sets"]:
+                    messagebox.showinfo(APP_NAME, "You already have every matching map.")
+                else:
+                    messagebox.showinfo(APP_NAME, "No maps match your filter.")
+                return
             free = free_space(plan["out_dir"])
             if free is not None and plan["est_bytes"] > free:
                 if not messagebox.askyesno(
@@ -1273,9 +1444,6 @@ def main_gui():
                         f"has {fmt_bytes(free)} free.\n\nDownload as much as fits anyway?\n"
                         "(Tip: tick 'Skip videos' or choose another drive.)"):
                     return
-            # Re-scan in case files were added since the check
-            have = existing_set_ids(plan["out_dir"])
-            plan["todo"] = [sid for sid in plan["todo"] if sid not in have]
             self.progress.configure(mode="determinate", value=0, maximum=1)
             self.open_btn.configure(state="normal")
             self.col_btn.configure(state="disabled")
@@ -1300,8 +1468,10 @@ def main_gui():
         def show_plan(self, plan):
             self.plan = plan
             self.name_lbl.configure(text=plan["name"])
+            filtered = " (filtered)" if plan.get("filter") else ""
             self.fields["maps"].configure(text=f"{plan['maps']:,} maps · "
-                                               f"{len(plan['sets']):,} sets")
+                                               f"{len(plan['sets']):,} sets{filtered}")
+            self.update_filter_note(plan)
             self.fields["have"].configure(text=f"{plan['have']:,} sets "
                                                f"({len(plan['todo']):,} to go)")
             size = fmt_bytes(plan["est_bytes"])
@@ -1354,6 +1524,10 @@ def main_gui():
         def on_plan(self, plan):
             self.progress.stop()
             self.progress.configure(mode="determinate", value=0)
+            self.plan = plan
+            self.set_filter_widgets()
+            if plan["has_stars"]:
+                apply_filter(plan, self.current_map_filter())
             self.show_plan(plan)
             self.open_btn.configure(state="normal" if os.path.isdir(plan["out_dir"])
                                     else "disabled")

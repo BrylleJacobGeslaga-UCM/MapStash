@@ -8,6 +8,7 @@
 
 - **Browse collections** inside the app: popular (today / week / month / all time), recent, and search
 - **Filter by category** (Aim, Stream, Speed, Tech, Reading, Farm, Stamina, Tourney), **star rating** and **game mode**
+- **Download only some maps** from a collection, by star rating and BPM (e.g. only the 6-7★ difficulties)
 - Works with **osu!lazer** and **osu!stable**
 - Shows **download size and free disk space** before you start, and warns if a collection won't fit
 - Live progress: maps done, GB downloaded, speed and time left
