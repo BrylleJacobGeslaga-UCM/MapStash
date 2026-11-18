@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MapStash</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;1,400;1,500&amp;family=Shippori+Mincho:wght@400;500;700&amp;display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="on-title">
+
+<div class="sky" aria-hidden="true">
+  <div class="moon-glow"></div>
+  <div class="moon"></div>
+  <div id="petals"></div>
+</div>
+
+<!-- ======================= TITLE ======================= -->
+<section class="screen" id="title" aria-label="Title screen">
+  <div class="title-logo">
+    <div class="katakana" aria-hidden="true">マップスタッシュ</div>
+    <div>
+      <h1 class="logo-big">MapStash</h1>
+      <div class="subtitle"><span>～ a collection downloader for osu! ～</span></div>
+    </div>
+  </div>
+  <nav class="title-menu" aria-label="Main menu" id="title-menu">
+    <button class="vn-item sel" data-go="browse"><span class="mark" aria-hidden="true">✦</span><span>Browse collections</span></button>
+    <button class="vn-item" data-go="download"><span class="mark" aria-hidden="true">✦</span><span>Download</span></button>
+    <button class="vn-item" data-go="config"><span class="mark" aria-hidden="true">✦</span><span>Config</span></button>
+    <button class="vn-item" data-go="exit"><span class="mark" aria-hidden="true">✦</span><span>Exit</span></button>
+  </nav>
+  <div class="footer">
+    <span id="version-line">unofficial · not affiliated with osu!Collector or ppy</span>
+    <button class="now-playing" id="now-playing" aria-label="Music on or off">♪ the moon is pretty tonight</button>
+  </div>
+</section>
+
+<!-- ======================= BROWSE ======================= -->
+<section class="screen" id="browse" aria-label="Browse collections">
+  <header class="top">
+    <div class="top-left"><button class="logo-small" data-go="title">MapStash</button><div class="plate">BROWSE</div></div>
+    <nav class="nav" aria-label="Screens">
+      <button data-go="title">Title</button><button data-go="browse" class="cur">Browse</button><button data-go="download">Download</button><button data-go="config">Config</button><button class="bgm-toggle" aria-label="Music on or off">♪</button>
+    </nav>
+  </header>
+
+  <div class="toolbar">
+    <div class="row">
+      <label class="label" for="b-kind">Show</label>
+      <select class="field" id="b-kind"><option value="popular">Popular</option><option value="recent">Recent</option></select>
+      <select class="field" id="b-range" aria-label="Time range">
+        <option value="today">Today</option><option value="week" selected>This week</option><option value="month">This month</option><option value="alltime">All time</option>
+      </select>
+      <label class="label" for="b-sort" style="margin-left: 12px">Sort</label>
+      <select class="field" id="b-sort">
+        <option value="">As listed</option><option value="favs">Most favourites</option><option value="maps">Most maps</option>
+        <option value="stars-d">Hardest first</option><option value="stars-a">Easiest first</option><option value="date">Newest</option>
+      </select>
+    </div>
+    <div class="row">
+      <label class="label" for="b-search">Search</label>
+      <input class="field" id="b-search" type="text" placeholder="aim training" style="width: 220px">
+      <button class="chip" id="b-search-go">Search</button>
+    </div>
+  </div>
+  <div class="filters">
+    <div class="chips" id="b-cats" role="group" aria-label="Category"></div>
+  </div>
+  <div class="filters">
+    <span>Stars</span>
+    <input class="field num" id="b-smin" type="number" min="0" max="12" step="0.5" value="0" aria-label="Minimum stars">
+    <span>to</span>
+    <input class="field num" id="b-smax" type="number" min="0" max="12" step="0.5" value="12" aria-label="Maximum stars">
+    <span>★</span>
+    <label for="b-mode" style="margin-left: 14px">Mode</label>
+    <select class="field" id="b-mode"><option value="">Any</option><option value="osu">osu!</option><option value="taiko">taiko</option><option value="fruits">catch</option><option value="mania">mania</option></select>
+    <span style="margin-left: 14px">Maps</span>
+    <input class="field num" id="b-mmin" type="number" min="0" step="10" placeholder="min" aria-label="Fewest maps">
+    <span>to</span>
+    <input class="field num" id="b-mmax" type="number" min="0" step="10" placeholder="max" aria-label="Most maps">
+    <label for="b-favs" style="margin-left: 14px">♥ at least</label>
+    <input class="field num" id="b-favs" type="number" min="0" step="1" placeholder="0" aria-label="Minimum favourites">
+    <label for="b-age" style="margin-left: 14px">Uploaded</label>
+    <select class="field" id="b-age"><option value="">Any time</option><option value="30">Past month</option><option value="182">Past 6 months</option><option value="365">Past year</option></select>
+    <button class="chip" id="b-reset" style="margin-left: 8px">Reset filters</button>
+  </div>
+
+  <div class="browse-main">
+    <section class="panel list-panel" aria-label="Collections">
+      <div class="slots" id="b-list"></div>
+      <div class="list-foot">
+        <span id="b-status">Loading collections…</span>
+        <button class="chip" id="b-more" disabled>Load more ▼</button>
+      </div>
+    </section>
+
+    <section class="panel detail" aria-label="Selected collection">
+      <div class="banner" id="d-banner" aria-hidden="true"></div>
+      <div class="plate-name" id="d-name">Choose a collection</div>
+      <div class="detail-body">
+        <span class="muted" style="font-size: 13px" id="d-by">&nbsp;</span>
+        <div class="stats">
+          <div class="stat"><span class="label">Maps</span><b id="d-maps">-</b></div>
+          <div class="stat"><span class="label">Average</span><b class="pink" id="d-stars">-</b></div>
+          <div class="stat"><span class="label">Type</span><b id="d-type">-</b></div>
+          <div class="stat"><span class="label">Favourites</span><b id="d-favs">-</b></div>
+        </div>
+        <div class="muted" style="font-size: 13px; line-height: 1.7; white-space: pre-line" id="d-spread"></div>
+        <div class="desc" id="d-desc"></div>
+        <div class="choices">
+          <button class="choice primary" id="d-dl" disabled>Download this</button>
+          <button class="choice" id="d-view" disabled>View maps</button>
+          <button class="choice" id="d-web" disabled>Open on website</button>
+        </div>
+      </div>
+    </section>
+  </div>
+</section>
+
+<!-- ======================= DOWNLOAD ======================= -->
+<section class="screen" id="download" aria-label="Download">
+  <header class="top">
+    <div class="top-left"><button class="logo-small" data-go="title">MapStash</button><div class="plate">DOWNLOAD</div></div>
+    <nav class="nav" aria-label="Screens">
+      <button data-go="title">Title</button><button data-go="browse">Browse</button><button data-go="download" class="cur">Download</button><button data-go="config">Config</button><button class="bgm-toggle" aria-label="Music on or off">♪</button>
+    </nav>
+  </header>
+
+  <div class="dl-main">
+    <div class="dl-col">
+      <section class="panel box" aria-label="Collection">
+        <label class="label" for="link">osu!Collector link or collection ID</label>
+        <div class="link-row">
+          <input class="field" id="link" type="text" placeholder="https://osucollector.com/collections/24173/...">
+          <button class="chip" id="paste">Paste</button>
+          <button class="chip" id="check">Check</button>
+          <button class="chip" id="view-maps">View maps</button>
+        </div>
+        <h2 id="i-name" class="muted">No collection yet</h2>
+        <div class="stats">
+          <div class="stat"><span class="label">Maps</span><b id="i-maps">-</b></div>
+          <div class="stat"><span class="label">Already downloaded</span><b id="i-have">-</b></div>
+          <div class="stat"><span class="label">Download size</span><b id="i-size">-</b></div>
+          <div class="stat"><span class="label">Free space</span><b id="i-free">-</b></div>
+        </div>
+        <div class="space-note muted" id="i-note">&nbsp;</div>
+      </section>
+      <section class="panel box" aria-label="Options">
+        <div class="row" style="justify-content: space-between">
+          <span>Game: <b class="pink" id="o-game" style="font-weight: 400">osu!lazer</b></span>
+          <button class="chip" data-go="config">Change in Config</button>
+        </div>
+        <div class="muted" style="font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap" id="o-folder"></div>
+        <div class="row" style="gap: 22px">
+          <label class="check"><input type="checkbox" id="o-novideo"> Skip videos</label>
+          <label class="check"><input type="checkbox" id="o-collection"> Create collection</label>
+        </div>
+      </section>
+    </div>
+
+    <div class="dl-col">
+      <section class="panel box" aria-label="Which maps" id="f-panel">
+        <div class="row" style="justify-content: space-between">
+          <label class="check"><input type="checkbox" id="f-on"> Only download some maps</label>
+          <button class="chip" id="f-more" aria-expanded="false">More filters ▾</button>
+        </div>
+        <div class="frange-grid">
+          <div class="frange" data-k="stars"><span>Stars</span><input class="field num" type="number" min="0" max="15" step="0.5" placeholder="min" aria-label="Minimum stars"><span>to</span><input class="field num" type="number" min="0" max="15" step="0.5" placeholder="max" aria-label="Maximum stars"></div>
+          <div class="frange" data-k="bpm"><span>BPM</span><input class="field num" type="number" min="0" max="1000" step="10" placeholder="min" aria-label="Minimum BPM"><span>to</span><input class="field num" type="number" min="0" max="1000" step="10" placeholder="max" aria-label="Maximum BPM"></div>
+          <div class="frange" data-k="length" title="Minutes, or minutes:seconds (3:30)"><span>Length</span><input class="field num" type="text" placeholder="0:00" aria-label="Shortest length"><span>to</span><input class="field num" type="text" placeholder="3:00" aria-label="Longest length"></div>
+          <div class="frange more" data-k="ar"><span>AR</span><input class="field num" type="number" min="0" max="11" step="0.5" placeholder="min" aria-label="Minimum approach rate"><span>to</span><input class="field num" type="number" min="0" max="11" step="0.5" placeholder="max" aria-label="Maximum approach rate"></div>
+          <div class="frange more" data-k="cs"><span>CS</span><input class="field num" type="number" min="0" max="10" step="0.5" placeholder="min" aria-label="Minimum circle size"><span>to</span><input class="field num" type="number" min="0" max="10" step="0.5" placeholder="max" aria-label="Maximum circle size"></div>
+          <div class="frange more" data-k="od"><span>OD</span><input class="field num" type="number" min="0" max="11" step="0.5" placeholder="min" aria-label="Minimum overall difficulty"><span>to</span><input class="field num" type="number" min="0" max="11" step="0.5" placeholder="max" aria-label="Maximum overall difficulty"></div>
+          <div class="frange more" data-k="hp"><span>HP</span><input class="field num" type="number" min="0" max="10" step="0.5" placeholder="min" aria-label="Minimum HP drain"><span>to</span><input class="field num" type="number" min="0" max="10" step="0.5" placeholder="max" aria-label="Maximum HP drain"></div>
+        </div>
+        <div class="frow more"><span class="label">Mode</span>
+          <div class="seg" id="f-modes" role="group" aria-label="Game mode">
+            <button class="chip" data-v="osu">osu!</button><button class="chip" data-v="taiko">taiko</button><button class="chip" data-v="fruits">catch</button><button class="chip" data-v="mania">mania</button>
+          </div>
+        </div>
+        <div class="frow more"><span class="label">Status</span>
+          <div class="seg" id="f-status" role="group" aria-label="Ranked status">
+            <button class="chip" data-v="ranked">Ranked</button><button class="chip" data-v="approved">Approved</button><button class="chip" data-v="qualified">Qualified</button><button class="chip" data-v="loved">Loved</button><button class="chip" data-v="pending">Pending</button><button class="chip" data-v="wip">WIP</button><button class="chip" data-v="graveyard">Graveyard</button>
+          </div>
+        </div>
+        <div class="row" style="justify-content: space-between; align-items: flex-start; flex-wrap: nowrap">
+          <div class="muted" style="font-size: 13px; line-height: 1.6" id="f-note">Check a collection to see how many maps match.</div>
+          <button class="chip" id="f-clear" style="flex: none">Clear</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="progress-area">
+    <div class="bar" id="bar"><div></div></div>
+    <div class="actions">
+      <span class="status" id="status">Ready.</span>
+      <div class="row">
+        <button class="btn" id="open-col" disabled>Collection folder</button>
+        <button class="btn" id="open-maps" disabled>Open folder</button>
+        <button class="btn" id="stop" disabled>Stop</button>
+        <button class="btn main" id="start">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <section class="msgbox" id="msgbox" aria-label="Message" aria-live="polite">
+    <div class="speaker">MapStash</div>
+    <div class="msg-tools"><button id="backlog-btn">BACKLOG</button></div>
+    <p class="msg-text" id="msg-text"></p>
+    <span class="msg-next" id="msg-next" aria-hidden="true">▼</span>
+  </section>
+</section>
+
+<!-- ======================= CONFIG ======================= -->
+<section class="screen" id="config" aria-label="Config">
+  <header class="top">
+    <div class="top-left"><button class="logo-small" data-go="title">MapStash</button><div class="plate">CONFIG</div></div>
+    <nav class="nav" aria-label="Screens">
+      <button data-go="title">Title</button><button data-go="browse">Browse</button><button data-go="download">Download</button><button data-go="config" class="cur">Config</button><button class="bgm-toggle" aria-label="Music on or off">♪</button>
+    </nav>
+  </header>
+  <div class="cfg">
+    <section class="panel box" aria-label="Downloads">
+      <h3>DOWNLOADS</h3>
+      <div class="cfg-row">
+        <span class="label">Game</span>
+        <div class="seg" id="c-target">
+          <button class="chip" data-v="lazer">osu!lazer</button><button class="chip" data-v="stable">osu!stable</button>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <label class="label" for="c-lazer">Save maps to (lazer)</label>
+        <div class="link-row"><input class="field" id="c-lazer" type="text"><button class="chip" data-pick="c-lazer">Browse…</button></div>
+      </div>
+      <div class="cfg-row">
+        <label class="label" for="c-stable">osu!stable folder</label>
+        <div class="link-row"><input class="field" id="c-stable" type="text"><button class="chip" data-pick="c-stable">Browse…</button></div>
+      </div>
+      <div class="cfg-row">
+        <label class="label" for="c-workers">Parallel downloads</label>
+        <div class="row"><input type="range" id="c-workers" min="1" max="8" step="1"><span id="c-workers-v"></span></div>
+      </div>
+      <label class="check"><input type="checkbox" id="c-novideo"> Skip videos (smaller downloads)</label>
+      <label class="check"><input type="checkbox" id="c-collection"> Create a collection in-game</label>
+    </section>
+    <section class="panel box" aria-label="Interface">
+      <h3>INTERFACE</h3>
+      <label class="check"><input type="checkbox" id="c-petals"> Falling petals</label>
+      <label class="check"><input type="checkbox" id="c-typewriter"> Typewriter text</label>
+      <div class="cfg-row">
+        <span class="label">Text speed</span>
+        <div class="seg" id="c-speed">
+          <button class="chip" data-v="1">Slow</button><button class="chip" data-v="2">Normal</button><button class="chip" data-v="3">Fast</button><button class="chip" data-v="4">Instant</button>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <label class="label" for="c-volume">Song preview volume</label>
+        <div class="row"><input type="range" id="c-volume" min="0" max="100" step="5"><span id="c-volume-v"></span></div>
+      </div>
+      <p class="muted" style="font-size: 13px; line-height: 1.7; margin: 8px 0 0">
+        MapStash is unofficial and not affiliated with osu!Collector or ppy.
+        Maps come from free community mirrors. If you enjoy osu!Collector, consider supporting its creator.
+      </p>
+    </section>
+    <section class="panel box" aria-label="Music">
+      <h3>MUSIC</h3>
+      <label class="check"><input type="checkbox" id="c-bgm"> Background music</label>
+      <div class="cfg-row">
+        <span class="label">Play</span>
+        <div class="seg" id="c-bgm-source">
+          <button class="chip" data-v="piano">Calm piano (built in)</button><button class="chip" data-v="folder">My music folder</button>
+        </div>
+      </div>
+      <div class="cfg-row">
+        <label class="label" for="c-bgm-folder">My music folder (mp3, ogg, m4a, wav, flac)</label>
+        <div class="link-row"><input class="field" id="c-bgm-folder" type="text"><button class="chip" data-pick="c-bgm-folder">Browse…</button></div>
+      </div>
+      <div class="cfg-row">
+        <label class="label" for="c-bgm-volume">Music volume</label>
+        <div class="row"><input type="range" id="c-bgm-volume" min="0" max="100" step="5"><span id="c-bgm-volume-v"></span></div>
+      </div>
+      <p class="muted" style="font-size: 13px; line-height: 1.7; margin: 4px 0 0">
+        The built-in piano is an original piece that MapStash plays live, so it never repeats the same way twice.
+        Music fades out while a song preview plays and comes back after.
+      </p>
+    </section>
+  </div>
+  <div class="actions" style="margin-top: 18px; justify-content: flex-end">
+    <span class="status" id="c-status"></span>
+    <button class="btn main" id="c-save">Save</button>
+  </div>
+</section>
+
+<!-- ======================= OVERLAYS ======================= -->
+<div class="overlay" id="choice-overlay" role="dialog" aria-modal="true" aria-label="Choice">
+  <div class="choice-dialog">
+    <p class="prompt" id="choice-prompt"></p>
+    <p class="sub">～ what will you do? ～</p>
+    <div id="choice-list" style="display: flex; flex-direction: column; gap: 10px"></div>
+  </div>
+</div>
+
+<div class="overlay" id="maps-overlay" role="dialog" aria-modal="true" aria-label="Maps in this collection">
+  <section class="panel window">
+    <div class="window-head">
+      <div style="min-width: 0">
+        <div class="label">MAPS IN THIS COLLECTION</div>
+        <h2 id="mv-name"></h2>
+      </div>
+      <div class="row" style="flex-wrap: nowrap">
+        <button class="chip" id="mv-web">Open on website</button>
+        <button class="chip on" id="mv-dl">Download collection</button>
+        <button class="chip" id="mv-close" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div class="window-body" id="mv-list"></div>
+    <div class="window-foot"><span id="mv-status">Loading…</span><span>▶ plays the song's preview</span></div>
+  </section>
+</div>
+
+<div class="overlay" id="backlog-overlay" role="dialog" aria-modal="true" aria-label="Backlog">
+  <section class="panel window">
+    <div class="window-head">
+      <div><div class="label">EVERYTHING SO FAR</div><h2>Backlog</h2></div>
+      <button class="chip" id="bl-close" aria-label="Close">✕</button>
+    </div>
+    <div class="window-body" id="bl-list"></div>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+<audio id="preview-audio" preload="none"></audio>
+<audio id="bgm-audio" preload="none"></audio>
+
+<script src="music.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
