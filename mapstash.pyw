@@ -125,6 +125,48 @@ def mode_summary(col):
     return " · ".join(parts)
 
 
+# Categories are guessed from a collection's name + description.
+CATEGORIES = {
+    "Aim": [r"\baim", r"\bjumps?\b", r"\bspaced\b", r"cross[- ]?screen", r"\bflow\b",
+            r"\bsnap"],
+    "Stream": [r"\bstreams?\b", r"\bstreaming\b", r"\bbursts?\b", r"death ?streams?"],
+    "Speed": [r"\bspeed\b", r"\bhigh bpm\b", r"\b2[0-9]0 ?bpm\b", r"\bdt\b", r"double ?time"],
+    "Tech": [r"\btech", r"\bsliders?\b", r"\balt\b", r"\balternat", r"finger control",
+             r"\brhythm\b"],
+    "Reading": [r"\breading\b", r"\blow ar\b", r"\bhigh ar\b", r"\bar ?(?:1[01]|[0-8])\b",
+                r"\bhd\b", r"\bhidden\b", r"\bfl\b", r"\bflashlight\b"],
+    "Farm": [r"\bfarm", r"\bpp\b", r"\bconsistency\b", r"\bfc\b"],
+    "Stamina": [r"\bstamina\b", r"\bmarathon", r"\blong maps?\b", r"\bendurance\b"],
+    "Tourney": [r"\btourn", r"\bmappools?\b", r"\bpools?\b", r"\bowc\b", r"\b(?:nm|hd|hr|dt|fm|tb)\d\b"],
+}
+_CAT_RE = {k: re.compile("|".join(v), re.I) for k, v in CATEGORIES.items()}
+
+
+def collection_categories(col):
+    text = f"{col.get('name', '')} {col.get('description', '')}"
+    return [k for k, rx in _CAT_RE.items() if rx.search(text)]
+
+
+def avg_stars(col):
+    """Weighted average star rating from difficultySpread ({"5": 120, ...}),
+    treating bucket k as k.5 stars. None if unknown."""
+    spread = col.get("difficultySpread") or {}
+    total = weighted = 0
+    for k, v in spread.items():
+        try:
+            k, v = float(k), int(v)
+        except (TypeError, ValueError):
+            continue
+        total += v
+        weighted += (k + 0.5) * v
+    return round(weighted / total, 1) if total else None
+
+
+def main_mode(col):
+    modes = {m: n for m, n in (col.get("modes") or {}).items() if isinstance(n, int)}
+    return max(modes, key=modes.get) if modes and max(modes.values()) > 0 else None
+
+
 def parse_collection_id(text):
     m = re.search(r"collections/(\d+)", text or "")
     if m:
@@ -546,8 +588,8 @@ def main_gui():
             s = load_settings()
 
             root.title(f"{APP_NAME} - {APP_TAGLINE}")
-            root.geometry("860x760")
-            root.minsize(700, 640)
+            root.geometry("980x780")
+            root.minsize(820, 660)
             root.configure(bg=BG)
 
             st = ttk.Style(root)
@@ -592,6 +634,11 @@ def main_gui():
                          relief="flat", font=("Segoe UI", 9, "bold"))
             st.map("Treeview.Heading", background=[("active", "#4a3f44")])
             st.configure("TCombobox", foreground=FG, arrowcolor=FG, padding=4)
+            st.configure("Chip.Toolbutton", background="#3a3135", foreground=FG,
+                         padding=(10, 4), font=("Segoe UI", 9, "bold"), borderwidth=0)
+            st.map("Chip.Toolbutton",
+                   background=[("selected", PINK), ("active", "#4a3f44")],
+                   foreground=[("selected", "#ffffff")])
             root.option_add("*TCombobox*Listbox.background", PANEL)
             root.option_add("*TCombobox*Listbox.foreground", FG)
             st.configure("Pink.Horizontal.TProgressbar", troughcolor=PANEL, background=PINK,
@@ -728,11 +775,14 @@ def main_gui():
 
         # ---- Browse tab
         def build_browse(self, tab):
-            self.browse_rows = {}       # tree item id -> collection dict
+            self.browse_rows = {}       # id -> collection (everything loaded)
+            self.browse_order = []      # ids in the order they were loaded
             self.browse_cursor = None
             self.browse_has_more = False
             self.browse_req = 0         # ignore results from outdated requests
             self.browse_searching = False
+            self.browse_loading = False
+            self.auto_pages = 0         # pages auto-loaded to fill filtered results
 
             top = ttk.Frame(tab, style="Card.TFrame", padding=10)
             top.pack(fill="x")
@@ -750,9 +800,41 @@ def main_gui():
 
             ttk.Button(top, text="Search", command=self.browse_search).pack(side="right")
             self.search_var = tk.StringVar()
-            se = ttk.Entry(top, textvariable=self.search_var, width=28)
+            se = ttk.Entry(top, textvariable=self.search_var, width=26)
             se.pack(side="right", padx=(16, 6))
             se.bind("<Return>", lambda _: self.browse_search())
+
+            # --- filters: category chips, stars, mode
+            flt = ttk.Frame(tab, style="Card.TFrame", padding=(10, 0, 10, 10))
+            flt.pack(fill="x")
+            chips = ttk.Frame(flt, style="Card.TFrame")
+            chips.pack(fill="x")
+            self.cat_var = tk.StringVar(value="All")
+            for name in ["All"] + list(CATEGORIES):
+                ttk.Radiobutton(chips, text=name, value=name, variable=self.cat_var,
+                                style="Chip.Toolbutton", command=self.filters_changed).pack(
+                    side="left", padx=(0, 4))
+
+            row2 = ttk.Frame(flt, style="Card.TFrame")
+            row2.pack(fill="x", pady=(8, 0))
+            ttk.Label(row2, text="Stars", style="Card.TLabel").pack(side="left")
+            self.star_min = tk.DoubleVar(value=0)
+            self.star_max = tk.DoubleVar(value=12)
+            for var, pad in ((self.star_min, (6, 4)), (self.star_max, (4, 0))):
+                sp = ttk.Spinbox(row2, from_=0, to=12, increment=0.5, width=5, textvariable=var,
+                                 command=self.filters_changed, format="%.1f")
+                sp.pack(side="left", padx=pad)
+                sp.bind("<KeyRelease>", lambda _: self.root.after(400, self.filters_changed))
+                if var is self.star_min:
+                    ttk.Label(row2, text="to", style="Card.TLabel").pack(side="left")
+            ttk.Label(row2, text="★", style="Card.TLabel").pack(side="left", padx=(2, 16))
+            ttk.Label(row2, text="Mode", style="Card.TLabel").pack(side="left")
+            self.mode_var = tk.StringVar(value="Any")
+            mb = ttk.Combobox(row2, textvariable=self.mode_var, state="readonly", width=8,
+                              values=["Any", "osu!", "taiko", "catch", "mania"])
+            mb.pack(side="left", padx=(6, 16))
+            mb.bind("<<ComboboxSelected>>", lambda _: self.filters_changed())
+            ttk.Button(row2, text="Reset filters", command=self.reset_filters).pack(side="right")
 
             body = ttk.Frame(tab)
             body.pack(fill="both", expand=True, pady=(10, 0))
@@ -760,13 +842,15 @@ def main_gui():
             # list
             listf = ttk.Frame(body, style="Card.TFrame", padding=2)
             listf.pack(side="left", fill="both", expand=True)
-            cols = ("name", "uploader", "maps", "favs", "date")
+            cols = ("name", "type", "stars", "maps", "favs", "uploader", "date")
             self.tree = ttk.Treeview(listf, columns=cols, show="headings", selectmode="browse")
-            for c, text, w, anchor in (("name", "Collection", 260, "w"),
-                                       ("uploader", "Uploader", 120, "w"),
-                                       ("maps", "Maps", 70, "e"),
-                                       ("favs", "♥", 50, "e"),
-                                       ("date", "Uploaded", 90, "center")):
+            for c, text, w, anchor in (("name", "Collection", 230, "w"),
+                                       ("type", "Type", 120, "w"),
+                                       ("stars", "★", 50, "e"),
+                                       ("maps", "Maps", 60, "e"),
+                                       ("favs", "♥", 40, "e"),
+                                       ("uploader", "Uploader", 100, "w"),
+                                       ("date", "Uploaded", 85, "center")):
                 self.tree.heading(c, text=text, command=lambda c=c: self.sort_tree(c))
                 self.tree.column(c, width=w, anchor=anchor, stretch=(c == "name"))
             ysb = ttk.Scrollbar(listf, command=self.tree.yview)
@@ -815,6 +899,103 @@ def main_gui():
             self.range_box.configure(
                 state="readonly" if self.browse_kind.get() == "Popular" else "disabled")
 
+        # -- filters
+        def star_bounds(self):
+            try:
+                lo = float(self.star_min.get())
+            except (tk.TclError, ValueError):
+                lo = 0.0
+            try:
+                hi = float(self.star_max.get())
+            except (tk.TclError, ValueError):
+                hi = 12.0
+            return lo, hi
+
+        def filters_active(self):
+            lo, hi = self.star_bounds()
+            return (self.cat_var.get() != "All" or self.mode_var.get() != "Any"
+                    or lo > 0 or hi < 12)
+
+        def matches(self, col):
+            cat = self.cat_var.get()
+            if cat != "All" and cat not in col["_cats"]:
+                return False
+            lo, hi = self.star_bounds()
+            if lo > 0 or hi < 12:
+                stars = col["_stars"]
+                if stars is None or not (lo <= stars <= hi):
+                    return False
+            mode = {"osu!": "osu", "taiko": "taiko", "catch": "fruits",
+                    "mania": "mania"}.get(self.mode_var.get())
+            if mode and col["_mode"] != mode:
+                return False
+            return True
+
+        def reset_filters(self):
+            self.cat_var.set("All")
+            self.star_min.set(0)
+            self.star_max.set(12)
+            self.mode_var.set("Any")
+            self.filters_changed()
+
+        def filters_changed(self):
+            self.auto_pages = 0
+            self.refilter()
+            self.maybe_autoload()
+
+        def refilter(self):
+            selected = self.tree.selection()
+            self.tree.delete(*self.tree.get_children())
+            shown = 0
+            for cid in self.browse_order:
+                col = self.browse_rows[cid]
+                if not self.matches(col):
+                    continue
+                shown += 1
+                stars = col["_stars"]
+                self.tree.insert("", "end", iid=cid, values=(
+                    col.get("name", f"Collection {cid}"),
+                    ", ".join(col["_cats"]) or "-",
+                    f"{stars:.1f}" if stars is not None else "-",
+                    f"{col.get('beatmapCount', 0):,}", col.get("favourites", 0),
+                    (col.get("uploader") or {}).get("username", ""),
+                    collection_date(col)))
+            if selected and self.tree.exists(selected[0]):
+                self.tree.selection_set(selected[0])
+            else:
+                self.show_details()
+            self.update_browse_status(shown)
+            sort = getattr(self, "_sort_state", None)
+            if sort:  # keep the user's column sort
+                self._sort_state = (sort[0], not sort[1])
+                self.sort_tree(sort[0])
+
+        def update_browse_status(self, shown=None):
+            if shown is None:
+                shown = len(self.tree.get_children())
+            loaded = len(self.browse_order)
+            if self.browse_loading:
+                extra = " · loading more..."
+            elif self.browse_has_more:
+                extra = " · more available"
+            else:
+                extra = ""
+            if self.filters_active():
+                text = f"Showing {shown} of {loaded} loaded collections{extra}"
+            else:
+                text = f"{loaded} collections{extra}"
+            if not loaded and not self.browse_loading:
+                text = "No collections found."
+            self.browse_status.configure(text=text)
+
+        def maybe_autoload(self):
+            """With filters on, keep loading pages until there are enough matches."""
+            if (self.filters_active() and not self.browse_loading and self.browse_has_more
+                    and len(self.tree.get_children()) < BROWSE_PAGE and self.auto_pages < 10):
+                self.auto_pages += 1
+                self.browse_load(more=True)
+
+        # -- loading
         def browse_search(self):
             if self.search_var.get().strip():
                 self.browse_load(search=True)
@@ -826,21 +1007,27 @@ def main_gui():
             if not more:
                 self.browse_searching = bool(search)
                 self.browse_cursor = None
-                self.tree.delete(*self.tree.get_children())
+                self.browse_has_more = False
                 self.browse_rows.clear()
+                self.browse_order.clear()
+                self.auto_pages = 0
+                self.tree.delete(*self.tree.get_children())
                 self.show_details()
             if self.browse_searching:
-                kind, label = "search", f'Searching "{self.search_var.get().strip()}"...'
+                kind = "search"
             elif self.browse_kind.get() == "Recent":
-                kind, label = "recent", "Loading recent collections..."
+                kind = "recent"
             else:
-                kind, label = "popular", "Loading popular collections..."
+                kind = "popular"
             args = (kind, self.browse_cursor if more else None,
                     POPULAR_RANGES.get(self.browse_range.get(), "week"),
                     self.search_var.get().strip())
             self.browse_req += 1
             req = self.browse_req
-            self.browse_status.configure(text=label)
+            self.browse_loading = True
+            self.update_browse_status()
+            if not self.browse_order:
+                self.browse_status.configure(text="Loading collections...")
             self.more_btn.configure(state="disabled")
 
             def work():
@@ -854,6 +1041,7 @@ def main_gui():
         def on_browse(self, req, cols, has_more, cursor, error):
             if req != self.browse_req:
                 return  # user already asked for something else
+            self.browse_loading = False
             if error:
                 msg = "Couldn't load collections - check your internet connection."
                 if self.browse_searching:
@@ -865,25 +1053,29 @@ def main_gui():
                 cid = col.get("id")
                 if cid is None or str(cid) in self.browse_rows:
                     continue
-                uploader = (col.get("uploader") or {}).get("username", "")
-                self.tree.insert("", "end", iid=str(cid), values=(
-                    col.get("name", f"Collection {cid}"), uploader,
-                    f"{col.get('beatmapCount', 0):,}", col.get("favourites", 0),
-                    collection_date(col)))
+                col["_cats"] = collection_categories(col)
+                col["_stars"] = avg_stars(col)
+                col["_mode"] = main_mode(col)
                 self.browse_rows[str(cid)] = col
+                self.browse_order.append(str(cid))
             self.browse_cursor = cursor
             self.browse_has_more = has_more and cursor is not None
             self.more_btn.configure(state="normal" if self.browse_has_more else "disabled")
-            n = len(self.browse_rows)
-            self.browse_status.configure(
-                text=f"{n} collections" + (" · more available" if self.browse_has_more else "")
-                if n else "No collections found.")
+            self.refilter()
+            self.maybe_autoload()
 
         def sort_tree(self, col):
-            numeric = col in ("maps", "favs")
+            numeric = col in ("maps", "favs", "stars")
+
+            def key(r):
+                v = str(r[0]).replace(",", "")
+                if not numeric:
+                    return v.lower()
+                try:
+                    return float(v)
+                except ValueError:
+                    return -1.0
             rows = [(self.tree.set(i, col), i) for i in self.tree.get_children("")]
-            key = (lambda r: int(str(r[0]).replace(",", "") or 0)) if numeric else \
-                  (lambda r: str(r[0]).lower())
             reverse = getattr(self, "_sort_state", None) != (col, True)
             rows.sort(key=key, reverse=reverse)
             for idx, (_, item) in enumerate(rows):
@@ -908,6 +1100,10 @@ def main_gui():
             date = collection_date(col)
             self.d_by.configure(text=f"by {uploader}" + (f" · {date}" if date else ""))
             lines = [f"{col.get('beatmapCount', 0):,} maps   ♥ {col.get('favourites', 0)}"]
+            if col.get("_stars") is not None:
+                lines.append(f"Average {col['_stars']:.1f}★")
+            if col.get("_cats"):
+                lines.append("Type: " + ", ".join(col["_cats"]))
             if mode_summary(col):
                 lines.append(mode_summary(col))
             if star_summary(col):

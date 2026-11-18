@@ -7,6 +7,7 @@
 ## Features
 
 - **Browse collections** inside the app: popular (today / week / month / all time), recent, and search
+- **Filter by category** (Aim, Stream, Speed, Tech, Reading, Farm, Stamina, Tourney), **star rating** and **game mode**
 - Works with **osu!lazer** and **osu!stable**
 - Shows **download size and free disk space** before you start, and warns if a collection won't fit
 - Live progress: maps done, GB downloaded, speed and time left
