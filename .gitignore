@@ -1,0 +1,16 @@
+# PyInstaller output
+build/
+dist/
+*.spec
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Downloaded maps (if you test inside the repo)
+*.osz
+*.osz.part
+
+# OS junk
+.DS_Store
+Thumbs.db
